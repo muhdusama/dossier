@@ -573,6 +573,32 @@ describe("the Refine with AI panel (E8-5)", () => {
     expect(within(panel()).queryByRole("button", { name: /Make/ })).not.toBeInTheDocument();
   });
 
+  it("asks screening questions in the existing chat without editing the document", async () => {
+    const user = userEvent.setup();
+    render(<ApplicationView {...props} initialTab="posting" />);
+    await user.click(screen.getByRole("button", { name: "Ask questions" }));
+    expect(screen.getByRole("heading", { name: "Ask about this job" })).toBeInTheDocument();
+    expect(screen.getByText(/Asking never changes your documents/)).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox", { name: "Ask a job question" }), "Why am I a good fit?{Enter}");
+    expect(sendMessage).toHaveBeenCalledWith({
+      id: "app-1", text: "Why am I a good fit?", viewing: null, target: null, mode: "ask", noteIds: [],
+    });
+  });
+
+  it("requires explicit note selection before sharing private notes in a question", async () => {
+    const user = userEvent.setup();
+    const activity = [{ kind: "note" as const, id: "n1", body: "Recruiter values mentoring.", date: "13 Nov", edited: false }, ...props.activity];
+    render(<ApplicationView {...props} activity={activity} />);
+    await user.click(screen.getByRole("button", { name: "Ask questions" }));
+    await user.click(screen.getByText("Include private notes (0)"));
+    expect(screen.getByText(/Only notes you select are sent to your AI provider/)).toBeInTheDocument();
+    await user.click(screen.getByRole("checkbox"));
+    await user.type(screen.getByRole("textbox", { name: "Ask a job question" }), "What should I stress?{Enter}");
+    expect(sendMessage).toHaveBeenCalledWith({
+      id: "app-1", text: "What should I stress?", viewing: null, target: null, mode: "ask", noteIds: ["n1"],
+    });
+  });
+
   it("sends a suggestion about the document on screen, then thinks", async () => {
     const user = userEvent.setup();
     render(<ApplicationView {...props} />);
@@ -807,7 +833,7 @@ describe("notes and activity (E8-9)", () => {
   it("has a Notes tab with the number of notes", () => {
     open();
     expect(screen.getByRole("tab", { name: "Notes · 2" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByText("Private and never sent to the AI")).toBeInTheDocument();
+    expect(screen.getByText("Private unless you select notes for an AI question")).toBeInTheDocument();
   });
 
   it("shows notes and status changes in one timeline, newest first", () => {

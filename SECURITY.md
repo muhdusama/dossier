@@ -22,7 +22,7 @@ Please report it privately through GitHub: on the repository's **Security** tab,
 A job posting, or a reply from Gmail, is text someone else wrote, and it goes into prompts. It could try to steer the model ("ignore your instructions and…"). What limits the damage:
 
 - The model has no tools: it can't read your other data, browse or change anything. It only returns text.
-- What it returns is shown as plain text, never as HTML, and checked against a schema before it's saved.
+- Model text is shown as plain text, never as HTML. Structured document edits are checked against a schema before they are saved. Answers in **Ask questions** mode are stored as chat replies only, without modifying any document or application status. Private notes are included only when the user selects them for that question.
 - The fact guard flags claims in a draft that your profile doesn't back up.
 - You read every document before you send it, and a drafted answer to a mail only goes out when you confirm it.
 - Reading a mail only suggests a status for its application, which you take up or not.

@@ -426,20 +426,22 @@ export function ApplicationView({
   };
 
   /** Sends a chat message (E8-5); resolves to whether it went. */
-  const send = (text: string) =>
+  const send = (text: string, mode: "ask" | "refine", noteIds: string[]) =>
     new Promise<boolean>((resolve) => {
-      const viewing = onScreen();
-      if ((viewing || target) && !aiReady) {
+      const asking = mode === "ask";
+      const viewing = asking ? null : onScreen();
+      if ((asking || viewing || target) && !aiReady) {
         needsAi();
         return resolve(false);
       }
       startTransition(async () => {
-        showSending({ id: "sending", role: "USER", text, targetUnit: target?.label ?? null, opening: false, canUndo: false, undone: false });
+        showSending({ id: "sending", role: "USER", text, targetUnit: asking ? null : target?.label ?? null, opening: false, canUndo: false, undone: false });
         const result = await sendMessage({
           id: application.id,
           text,
           viewing,
-          target: target && { document: target.document, unitId: target.unitId },
+          target: !asking && target ? { document: target.document, unitId: target.unitId } : null,
+          ...(asking ? { mode, noteIds } : {}),
         });
         if (!result.ok) {
           toast(result.error);
@@ -864,6 +866,7 @@ export function ApplicationView({
         <RefinePanel
           tab={tab}
           messages={[...messages, ...sending]}
+          notes={activity.flatMap((entry) => entry.kind === "note" ? [{ id: entry.id, body: entry.body, date: entry.date }] : [])}
           thinking={reply !== null}
           suggestions={tab === "resume" ? suggestions.resume : tab === "letter" ? suggestions.letter : tab === "email" && email ? suggestions.email : []}
           target={target}

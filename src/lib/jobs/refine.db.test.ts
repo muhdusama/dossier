@@ -27,9 +27,16 @@ const letter = [...demoLetterUnits(), { id: "sign-off", label: "Sign-off", text:
 const context = { id: "test-job", step: async () => {}, signal: new AbortController().signal };
 const reply = (answer: object) => new MockProvider({ reply: () => ({ edits: [], tone: null, declined: false, ...answer }) });
 
-async function ask(request: string, extra: { target?: { document: "RESUME" | "COVER_LETTER"; unitId: string } | null } = {}) {
+async function ask(request: string, extra: {
+  target?: { document: "RESUME" | "COVER_LETTER"; unitId: string } | null;
+  mode?: "ask" | "refine";
+  noteIds?: string[];
+} = {}) {
   const message = await prisma().chatMessage.create({ data: { applicationId: "app-1", role: "USER", text: request } });
-  return refineJob.run({ applicationId: "app-1", messageId: message.id, request, target: extra.target ?? null, viewing: "RESUME" }, context);
+  return refineJob.run({
+    applicationId: "app-1", messageId: message.id, request, target: extra.target ?? null, viewing: "RESUME",
+    mode: extra.mode ?? "refine", noteIds: extra.noteIds ?? [],
+  }, context);
 }
 const units = async (kind: "RESUME" | "COVER_LETTER") =>
   (await prisma().document.findUniqueOrThrow({ where: { applicationId_kind: { applicationId: "app-1", kind } } })).units as typeof resume;
@@ -125,6 +132,46 @@ describe("refineJob (E8-5)", () => {
     const messages = mock.calls[0].messages;
     expect(messages.at(-2)).toEqual({ role: "assistant", content: "Here's what I tailored for Ledgerly." });
     expect(messages.at(-1)).toEqual({ role: "user", content: "About Summary (summary): Mention payments" });
+  });
+
+  it("persists question answers without modifying any document or creating versions", async () => {
+    const mock = new MockProvider({ reply: () => "Use the design system example." });
+    provider.current = mock;
+    const result = await ask("How should I answer the design system question?", { mode: "ask" });
+
+    expect(result.edited).toEqual([]);
+    expect(await lastMessage()).toMatchObject({
+      id: result.messageId, role: "AI", text: "Use the design system example.", writtenWith: "job-question@1",
+    });
+    expect(await prisma().documentVersion.count()).toBe(0);
+    expect(await units("RESUME")).toEqual(resume);
+    expect(await units("COVER_LETTER")).toEqual(letter);
+    expect((await prisma().application.findUniqueOrThrow({ where: { id: "app-1" } })).tone).toBe("WARM");
+  });
+
+  it("only shares explicitly selected notes from the requested application", async () => {
+    const selected = await prisma().note.create({ data: { applicationId: "app-1", body: "Recruiter values Figma experience." } });
+    await prisma().note.create({ data: { applicationId: "app-1", body: "Private salary floor 85k." } });
+    await prisma().application.create({ data: { id: "app-2", notes: { create: { body: "Another application secret." } } } });
+    const mock = new MockProvider({ reply: () => "Mention your Figma work." });
+    provider.current = mock;
+    await ask("What should I stress?", { mode: "ask", noteIds: [selected.id] });
+    const sent = JSON.stringify(mock.calls);
+    expect(sent).toContain("Recruiter values Figma experience.");
+    expect(sent).not.toContain("Private salary floor");
+    expect(sent).not.toContain("Another application secret");
+    expect(await prisma().documentVersion.count()).toBe(0);
+  });
+
+  it("rejects notes belonging to a different application before asking the AI", async () => {
+    const other = await prisma().application.create({
+      data: { id: "app-2", notes: { create: { body: "Private application data." } } },
+      include: { notes: true },
+    });
+    const mock = new MockProvider({ reply: () => "No." });
+    provider.current = mock;
+    await expect(ask("Can you use this note?", { mode: "ask", noteIds: [other.notes[0].id] })).rejects.toThrow("Selected notes changed");
+    expect(mock.calls).toHaveLength(0);
   });
 
   it("never sends private notes to the AI (E8-9)", async () => {

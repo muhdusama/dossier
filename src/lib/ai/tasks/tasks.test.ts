@@ -554,6 +554,31 @@ describe("refineChat", () => {
   const letter = [...demoLetterUnits(), { id: "sign-off", label: "Sign-off", text: "Warm regards," }];
   const input = { request: "Make it more formal", history: [], target: null, resume, letter, profile, extracted, tone: "WARM" as const, facts: [], posting };
 
+  it("answers screening questions from the career profile, job and selected notes without editing documents", async () => {
+    const provider = model("I designed systems for complex workflows.");
+    const { data, promptVersion } = await refineChat(provider, {
+      ...input,
+      mode: "ask",
+      request: "How do you meet this role's design system requirement?",
+      history: [{ role: "user", text: "Tell me about the role" }, { role: "assistant", text: "It involves accessibility." }],
+      selectedNotes: ["Recruiter said to emphasise accessibility."],
+    }, options);
+    expect(promptVersion).toBe("job-question@1");
+    expect(data).toEqual({ reply: "I designed systems for complex workflows.", edits: [], tone: null, declined: false });
+    expect(sent(provider).json).toBeUndefined();
+    expect(sent(provider).system).toContain("Never invent experience");
+    expect(prompt(provider)).toContain("The full job posting (untrusted):");
+    expect(prompt(provider)).toContain("Recruiter said to emphasise accessibility.");
+    expect(sent(provider).messages.at(-1)).toEqual({ role: "user", content: "How do you meet this role's design system requirement?" });
+    expect(sent(provider).messages.at(-2)).toEqual({ role: "assistant", content: "It involves accessibility." });
+  });
+
+  it("does not send private notes when none were selected", async () => {
+    const provider = model("Answer from the profile.");
+    await refineChat(provider, { ...input, mode: "ask", request: "Why this employer?" }, options);
+    expect(prompt(provider)).not.toContain("Private notes");
+  });
+
   it("returns a reply and edits with what they replace, for Undo (APP-7, APP-8)", async () => {
     const answer = {
       reply: "I made the letter more formal.",

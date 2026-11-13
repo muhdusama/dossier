@@ -37,6 +37,8 @@ export const refineJob = defineJob({
     /** The user's message, saved before the job started. */
     messageId: z.string().min(1),
     request: z.string().min(1),
+    mode: z.enum(["refine", "ask"]).default("refine"),
+    noteIds: z.array(z.string().min(1)).max(8).default([]),
     /** The unit picked with "Ask AI", if any. */
     target: unitRef.nullable(),
     /** The document on screen. */
@@ -48,7 +50,7 @@ export const refineJob = defineJob({
     /** The units it changed, to show them. */
     edited: z.array(unitRef),
   }),
-  async run({ applicationId, messageId, request, target, viewing }, { step, signal }) {
+  async run({ applicationId, messageId, request, target, viewing, mode = "refine", noteIds = [] }, { step, signal }) {
     await step("Thinking");
     const application = await prisma.application.findUniqueOrThrow({
       where: { id: applicationId },
@@ -71,12 +73,27 @@ export const refineJob = defineJob({
     );
     const targetUnit = target && unitsOf(target.document).find((unit) => unit.id === target.unitId);
 
+    // Private notes remain private unless the candidate explicitly selected them.
+    const selectedNotes = mode === "ask" && noteIds.length > 0
+      ? await prisma.note.findMany({ where: { applicationId, id: { in: noteIds } }, select: { id: true, body: true } })
+      : [];
+    if (selectedNotes.length !== noteIds.length && mode === "ask") throw new Error("Selected notes changed. Reload and choose them again.");
+    const notesById = new Map(selectedNotes.map((note) => [note.id, note.body]));
+    let notesLeft = 12_000;
+    const noteTexts = noteIds.map((id) => {
+      const note = (notesById.get(id) ?? "").slice(0, Math.min(3_000, notesLeft));
+      notesLeft -= note.length;
+      return note;
+    }).filter(Boolean);
+
     const [provider, options, profile, facts] = await Promise.all([getAiProvider(), loadTaskOptions(), profileOfApplication(application.frozen), loadFactTexts(applicationId)]);
     const { data, promptVersion } = await refineChat(
       provider,
       {
         request,
         history,
+        mode,
+        selectedNotes: noteTexts,
         target: targetUnit ? `${targetUnit.label} (${targetUnit.id})` : null,
         viewing,
         resume,
@@ -91,6 +108,15 @@ export const refineJob = defineJob({
       // The documents are in this language, so edits are too.
       { ...options, language: application.language || options.language, signal },
     );
+
+    if (mode === "ask") {
+      // A question saves only a reply. It cannot touch document units, tone or version history.
+      const reply = await prisma.chatMessage.create({
+        data: { applicationId, role: ChatRole.AI, text: data.reply, writtenWith: promptVersion },
+        select: { id: true },
+      });
+      return { messageId: reply.id, edited: [] };
+    }
 
     return updateDocuments(applicationId, async (documents, tx) => {
       const applied: UnitEdit[] = [];

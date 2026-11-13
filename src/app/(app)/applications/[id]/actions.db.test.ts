@@ -455,8 +455,42 @@ describe("sendMessage (E8-5)", () => {
       type: "refine",
       key: "refine:app-1",
       applicationId: "app-1",
-      input: { applicationId: "app-1", messageId: message.id, request: "Shorter, please", viewing: "RESUME", target: { document: "RESUME", unitId: "summary" } },
+      input: { applicationId: "app-1", messageId: message.id, request: "Shorter, please", mode: "refine", noteIds: [], viewing: "RESUME", target: { document: "RESUME", unitId: "summary" } },
     });
+  });
+
+  it("queues a question on the posting tab, including only explicitly selected notes", async () => {
+    const selected = await prisma().note.create({ data: { applicationId: "app-1", body: "Recruiter wants team examples." } });
+    const result = await sendMessage({
+      id: "app-1", text: "How should I answer?", mode: "ask", noteIds: [selected.id], viewing: null, target: null,
+    });
+    expect(result.ok).toBe(true);
+    const [message] = await messages();
+    const job = await prisma().job.findUniqueOrThrow({ where: { id: result.ok && result.data.jobId ? result.data.jobId : "" } });
+    expect(message).toMatchObject({ role: "USER", text: "How should I answer?" });
+    expect(job).toMatchObject({
+      type: "refine", key: "refine:app-1",
+      input: { mode: "ask", noteIds: [selected.id], viewing: null, target: null },
+    });
+  });
+
+  it("never queues a question with another application's private note", async () => {
+    const other = await prisma().application.create({
+      data: { id: "app-2", notes: { create: { body: "Unrelated private data." } } },
+      include: { notes: true },
+    });
+    const result = await sendMessage({
+      id: "app-1", text: "Can I use this?", mode: "ask", noteIds: [other.notes[0].id], viewing: null, target: null,
+    });
+    expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/belongs to this application/) });
+    expect(await messages()).toHaveLength(0);
+    expect(await prisma().job.count()).toBe(0);
+  });
+
+  it("requires an AI provider for questions even on the posting tab", async () => {
+    ai.ready = false;
+    expect(await sendMessage({ id: "app-1", text: "How do I fit?", mode: "ask", viewing: null, target: null }))
+      .toMatchObject({ ok: false, error: expect.stringMatching(/needs an AI provider/) });
   });
 
   it("answers on the Job posting tab at once, in order", async () => {

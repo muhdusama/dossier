@@ -5,6 +5,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
+import { copyText } from "@/lib/copy-text";
 
 import type { Tab } from "./tabs";
 
@@ -42,6 +43,7 @@ const SUBTITLES: Record<Tab, string> = {
 export function RefinePanel({
   tab,
   messages,
+  notes,
   thinking,
   suggestions,
   target,
@@ -53,13 +55,15 @@ export function RefinePanel({
 }: {
   tab: Tab;
   messages: ChatEntry[];
+  /** Private notes, shown for explicit inclusion in a question only. */
+  notes?: { id: string; body: string; date: string }[];
   /** A reply is on its way. */
   thinking: boolean;
   suggestions: string[];
   target: ChatTarget | null;
   onClearTarget: () => void;
   /** Resolves to whether the message was sent; the box keeps it otherwise. */
-  onSend: (text: string) => Promise<boolean>;
+  onSend: (text: string, mode: "ask" | "refine", noteIds: string[]) => Promise<boolean>;
   aiReady: boolean;
   /** Goes up when the box should take focus, e.g. after "Ask AI". */
   focusRequest: number;
@@ -67,6 +71,8 @@ export function RefinePanel({
   children?: (message: ChatEntry) => ReactNode;
 }) {
   const [draft, setDraft] = useState("");
+  const [mode, setMode] = useState<"ask" | "refine">("refine");
+  const [selectedNotes, setSelectedNotes] = useState<string[]>([]);
   const input = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -76,7 +82,7 @@ export function RefinePanel({
   const send = async (text: string) => {
     if (!text.trim() || thinking) return;
     setDraft("");
-    if (!(await onSend(text.trim()))) setDraft(text);
+    if (!(await onSend(text.trim(), mode, mode === "ask" ? selectedNotes : []))) setDraft(text);
   };
 
   return (
@@ -85,11 +91,25 @@ export function RefinePanel({
       className="flex-[1_0_300px] border-t border-line bg-paper @min-[780px]:border-t-0 @min-[780px]:border-l"
     >
       <div className="flex h-[min(100dvh,680px)] flex-col @min-[780px]:h-full">
-        <div className="flex flex-col gap-1 px-6 pt-[26px] pb-3.5">
+        <div className="flex flex-col gap-2 px-6 pt-[26px] pb-3.5">
           <h2 id="refine-heading" className="text-[15px] font-medium">
-            Refine with AI
+            {mode === "ask" ? "Ask about this job" : "Refine with AI"}
           </h2>
-          <p className="text-meta leading-[1.45] text-muted">{SUBTITLES[tab]}</p>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" aria-pressed={mode === "refine"} onClick={() => setMode("refine")}
+              className={cn("rounded-control px-3 py-1.5 text-label", mode === "refine" ? "bg-primary text-on-primary" : "border border-line-field bg-card")}>
+              Edit documents
+            </button>
+            <button type="button" aria-pressed={mode === "ask"} onClick={() => { setMode("ask"); onClearTarget(); }}
+              className={cn("rounded-control px-3 py-1.5 text-label", mode === "ask" ? "bg-primary text-on-primary" : "border border-line-field bg-card")}>
+              Ask questions
+            </button>
+          </div>
+          <p className="text-meta leading-[1.45] text-muted">
+            {mode === "ask"
+              ? "Draft screening answers, research this role or practise interview questions. Asking never changes your documents."
+              : SUBTITLES[tab]}
+          </p>
         </div>
 
         {/* column-reverse keeps the newest message in view. Focusable, so it scrolls from the keyboard too (E11-3). */}
@@ -98,6 +118,12 @@ export function RefinePanel({
             {messages.map((message) => (
               <div key={message.id} className={cn("flex flex-col gap-[5px]", message.role === "USER" ? "items-end" : "items-start")}>
                 <Bubble message={message} />
+                {message.role === "AI" && !message.opening && (
+                  <button type="button" onClick={() => void copyText(message.text)}
+                    className="px-1 text-label text-muted underline underline-offset-3 hover:text-ink">
+                    Copy answer
+                  </button>
+                )}
                 {children?.(message)}
               </div>
             ))}
@@ -106,7 +132,7 @@ export function RefinePanel({
         </div>
 
         <div className="flex flex-col gap-2.5 border-t border-line px-6 pt-3.5 pb-6">
-          {!aiReady && tab !== "posting" && (
+          {!aiReady && (mode === "ask" || tab !== "posting") && (
             <p className="text-meta text-muted">
               Refining needs an AI provider.{" "}
               <Link href="/settings?section=ai" className="font-medium text-ink underline underline-offset-2">
@@ -114,7 +140,27 @@ export function RefinePanel({
               </Link>
             </p>
           )}
-          {aiReady && suggestions.length > 0 && (
+          {mode === "ask" && notes && notes.length > 0 && (
+            <details className="text-label text-muted">
+              <summary className="cursor-pointer font-medium text-ink">Include private notes ({selectedNotes.length})</summary>
+              <p className="mt-1">
+                Only notes you select are sent to your AI provider. Their answers remain in this application’s chat history and may inform later questions.
+              </p>
+              <div className="mt-2 flex max-h-36 flex-col gap-1.5 overflow-auto">
+                {notes.map((note) => (
+                  <label key={note.id} className="flex items-start gap-2">
+                    <input type="checkbox" className="mt-0.5" checked={selectedNotes.includes(note.id)}
+                      disabled={!selectedNotes.includes(note.id) && selectedNotes.length >= 8}
+                      onChange={(event) => setSelectedNotes((current) => event.target.checked
+                        ? [...current, note.id].slice(0, 8)
+                        : current.filter((id) => id !== note.id))} />
+                    <span>{note.date}: {note.body.slice(0, 120)}{note.body.length > 120 ? "…" : ""}</span>
+                  </label>
+                ))}
+              </div>
+            </details>
+          )}
+          {mode === "refine" && aiReady && suggestions.length > 0 && (
             <div className="flex flex-wrap gap-1.5">
               {suggestions.map((suggestion) => (
                 <button
@@ -130,7 +176,7 @@ export function RefinePanel({
             </div>
           )}
           <div className="flex flex-col gap-2 rounded-card border border-line-input bg-input px-3 py-2.5 focus-within:border-primary">
-            {target && (
+            {mode === "refine" && target && (
               <div className="flex">
                 <span className="inline-flex items-center gap-1.5 rounded-full bg-track py-1 pr-1.5 pl-2.5 text-label">
                   About: {target.label}
@@ -147,10 +193,10 @@ export function RefinePanel({
             )}
             <textarea
               ref={input}
-              aria-label="Ask for a change"
+              aria-label={mode === "ask" ? "Ask a job question" : "Ask for a change"}
               rows={2}
               value={draft}
-              placeholder={target ? `What should change in the ${target.name}?` : "Ask for a change, e.g. “sound more confident”"}
+              placeholder={mode === "ask" ? "E.g. Why are you a good fit for this role?" : target ? `What should change in the ${target.name}?` : "Ask for a change, e.g. “sound more confident”"}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event) => {
                 // Enter sends, Shift+Enter starts a new line; not while an input method is composing.

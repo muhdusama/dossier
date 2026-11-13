@@ -339,16 +339,24 @@ const POSTING_REPLY = "I can change the resume, the cover letter or the email. S
 export const sendMessage = action(
   z.object({
     id: z.string().min(1),
-    text: z.string().trim().min(1, "Write what should change first.").max(2000),
+    text: z.string().trim().min(1, "Write your request first.").max(2000),
+    mode: z.enum(["refine", "ask"]).default("refine"),
+    /** Private notes are used for a question only when selected by the user. */
+    noteIds: z.array(z.string().min(1)).max(8).default([]),
     /** The document on screen; null on the Job posting and Notes tabs, and on the Email tab before there's an email. */
     viewing: z.enum(DocumentKind).nullable(),
     /** The unit picked with "Ask AI". */
     target: z.object({ document: z.enum(DocumentKind), unitId: z.string().min(1) }).nullable(),
   }),
-  async ({ id, text, viewing, target }) => {
+  async ({ id, text, mode, noteIds, viewing, target }) => {
     if (!(await prisma.application.count({ where: { id } }))) throw new ActionError(GONE);
+    if (noteIds.length > 0 && mode !== "ask") throw new ActionError("Notes can only be used when asking questions.");
+    if (new Set(noteIds).size !== noteIds.length) throw new ActionError("Choose each note only once.");
+    if (noteIds.length > 0 && (await prisma.note.count({ where: { applicationId: id, id: { in: noteIds } } })) !== noteIds.length) {
+      throw new ActionError("A selected note no longer belongs to this application. Reload the page.");
+    }
 
-    if (!viewing && !target) {
+    if (mode === "refine" && !viewing && !target) {
       const now = Date.now();
       await prisma.chatMessage.createMany({
         data: [
@@ -376,7 +384,9 @@ export const sendMessage = action(
       data: { applicationId: id, role: ChatRole.USER, text, targetUnit: targetLabel },
       select: { id: true },
     });
-    const jobId = await startJob(refineJob, { applicationId: id, messageId: message.id, request: text, target, viewing }, { key: refineJobKey(id), applicationId: id });
+    const jobId = await startJob(refineJob, {
+      applicationId: id, messageId: message.id, request: text, target, viewing, mode, noteIds,
+    }, { key: refineJobKey(id), applicationId: id });
     refresh(id);
     return { jobId };
   },
@@ -443,8 +453,8 @@ export const addMatchSkill = action(z.object({ id: z.string().min(1), index: z.n
   return { name: skill.name };
 });
 
-// Private notes (E8-9, APP-14). They stay on this server and never go into
-// a prompt: no AI task reads the Note table.
+// Private notes (E8-9, APP-14). Never sent to AI automatically; Ask questions
+// can include explicitly selected notes from this application only.
 
 const noteBody = z.string().trim().min(1, "Write something first.").max(5000);
 
